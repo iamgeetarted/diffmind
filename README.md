@@ -5,9 +5,56 @@ AI-powered git diff reviewer. Stream a structured code review for any diff — s
 ```
 diffmind review                      # review current branch vs main (streaming Rich UI)
 diffmind review --focus issues       # only flag bugs and security concerns
+diffmind score                       # complexity/risk score — no AI, instant
 diffmind batch abc123 def456 ghi789  # review 3 commits concurrently
 diffmind log --n 10 --format json    # review last 10 commits, export as JSON
+diffmind history list                # browse past reviews
 git diff | diffmind review           # pipe any diff directly
+```
+
+## What's New in v1.1.0
+
+- **`diffmind score`** — Instant complexity and risk scoring with no AI required. Counts lines added/removed, categorises files (source vs test vs config vs migrations), computes a 0–100 risk score, and prints a Rich breakdown table. Great for a quick sanity check before hitting the AI.
+- **Config file** — `~/.diffmind.toml` sets persistent defaults for `model`, `focus`, `format`, and `save_history`. No more repeating `--model claude-sonnet-4-6` on every invocation.
+- **Review history** — Pass `--save` on any `review` call to append to `~/.diffmind/history.jsonl`. Browse with `diffmind history list`, show stats with `diffmind history stats`, and clear with `diffmind history clear`.
+
+```bash
+# Score a diff before reviewing it
+diffmind score --staged
+
+# Save reviews to history
+diffmind review --staged --save
+
+# Browse history
+diffmind history list --n 20
+diffmind history stats
+
+# ~/.diffmind.toml
+# model        = "claude-sonnet-4-6"
+# focus        = "issues"
+# save_history = true
+```
+
+**Sample score output:**
+
+```
+╭─ diffmind score  staged ──────────────────────────────╮
+│  Label               staged                           │
+│  Lines added         +147                             │
+│  Lines removed       -23                              │
+│  Net change          +124                             │
+│  Total churn         170                              │
+│  Files changed       8                                │
+│    Source files      5                                │
+│    Test files        2                                │
+│    Config/infra      1                                │
+│    Migrations        0                                │
+│  Test coverage ratio 25%                              │
+│  Risk level          MEDIUM  32/100                   │
+╰───────────────────────────────────────────────────────╯
+Notes:
+  • Moderate churn: 170 lines changed
+  • Touches config/infra files: pyproject.toml
 ```
 
 ## Breakthrough techniques
@@ -146,7 +193,10 @@ diffmind log --n 10 --format markdown > weekly-review.md
 diffmind/
 ├── differ.py     # async git subprocess wrappers (diff_commits, diff_commit, …)
 ├── reviewer.py   # streaming review via Anthropic SDK; batch_review uses TaskGroup
+├── scorer.py     # diff complexity/risk scoring (no AI)
 ├── formatter.py  # rich / markdown / json output renderers
+├── history.py    # append-only JSONL review history log
+├── config.py     # ~/.diffmind.toml config loader
 └── cli.py        # argparse CLI wiring all commands together
 ```
 
@@ -162,6 +212,7 @@ diffmind/
 | `--focus` | `full` | `full` / `summary` / `issues` / `suggest` |
 | `--format` / `-f` | `rich` | `rich` / `markdown` / `json` |
 | `--base` | `main` | Base branch for `review` |
+| `--save` | off | Append review to `~/.diffmind/history.jsonl` |
 | `--concurrency` / `-c` | `4` | Max concurrent reviews in `batch` / `log` |
 | `--cwd` | current dir | Git repository path |
 
