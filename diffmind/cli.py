@@ -142,6 +142,9 @@ def cmd_review(args: argparse.Namespace) -> int:
     if args.format == "json":
         from .formatter import format_json
         print(format_json([result]))
+    elif args.format == "html":
+        from .formatter import format_html
+        print(format_html([result]))
     elif args.format == "markdown" and args.format != "rich":
         pass  # already printed via on_chunk_plain
 
@@ -463,7 +466,7 @@ config (~/.diffmind.toml):
         help=f"Review focus (default: {cfg.default_focus})",
     )
     pr.add_argument(
-        "--format", "-f", choices=["rich", "markdown", "json"],
+        "--format", "-f", choices=["rich", "markdown", "json", "html"],
         default=cfg.default_format,
         help=f"Output format (default: {cfg.default_format})",
     )

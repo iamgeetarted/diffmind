@@ -12,6 +12,22 @@ diffmind history list                # browse past reviews
 git diff | diffmind review           # pipe any diff directly
 ```
 
+## What's New in v1.2.0
+
+- **Missing module fixes** — `config.py`, `scorer.py`, and `history.py` are now included in the package. All commands (`review`, `score`, `batch`, `log`, `history`) work without crashing on import.
+- **HTML export** — `diffmind review --format html > report.html` generates a self-contained dark-themed single-file HTML report. No external dependencies required.
+
+```bash
+# Generate an HTML report for staged changes
+diffmind review --staged --format html > staged-review.html
+
+# Review a commit range and export to HTML
+diffmind review --commits main HEAD --format html > pr-review.html
+
+# Pipe a diff and export to HTML
+git diff HEAD~1 | diffmind review --format html > last-commit.html
+```
+
 ## What's New in v1.1.0
 
 - **`diffmind score`** — Instant complexity and risk scoring with no AI required. Counts lines added/removed, categorises files (source vs test vs config vs migrations), computes a 0–100 risk score, and prints a Rich breakdown table. Great for a quick sanity check before hitting the AI.
