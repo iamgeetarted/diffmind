@@ -1,16 +1,66 @@
 # diffmind
 
-AI-powered git diff reviewer. Stream a structured code review for any diff — single commits, commit ranges, staged changes, or piped diffs — with concurrent batch mode for reviewing multiple commits at once.
+AI-powered git diff reviewer. Stream a structured code review for any diff — single commits, commit ranges, staged changes, GitHub PRs, or piped diffs — with concurrent batch mode, watch mode, and disk-based result caching.
 
 ```
 diffmind review                      # review current branch vs main (streaming Rich UI)
 diffmind review --focus issues       # only flag bugs and security concerns
+diffmind pr owner/repo#42            # review a GitHub Pull Request
+diffmind watch                       # auto-review new commits as they land
+diffmind cache stats                 # inspect the local review cache
 diffmind score                       # complexity/risk score — no AI, instant
 diffmind batch abc123 def456 ghi789  # review 3 commits concurrently
 diffmind log --n 10 --format json    # review last 10 commits, export as JSON
 diffmind history list                # browse past reviews
 git diff | diffmind review           # pipe any diff directly
 ```
+
+## What's New in v1.3.0
+
+### 1. Disk-based Review Cache
+
+Reviews are now cached to `~/.diffmind/cache/` keyed by a SHA-256 hash of the diff content, model, and focus. Repeated reviews of the same unchanged code return instantly with zero API calls.
+
+```bash
+# Cache is transparent — results are cached automatically
+diffmind review --staged               # first run: calls AI, caches result
+diffmind review --staged               # subsequent: instant from cache (no API call)
+
+# Bypass the cache for a fresh review
+diffmind review --staged --no-cache
+
+# Inspect and manage the cache
+diffmind cache stats                   # entries, size, age
+diffmind cache clear                   # wipe all cached entries
+```
+
+Default TTL is **7 days**. The cache is keyed by `(diff_content, model, focus)` — a different model or focus always fetches fresh results.
+
+### 2. Watch Mode
+
+`diffmind watch` polls the git log every N seconds and streams a review for each new commit the moment it lands.
+
+```bash
+diffmind watch                         # poll every 5s, summary focus
+diffmind watch --interval 10           # poll every 10 seconds
+diffmind watch --focus full --model claude-sonnet-4-6  # deep analysis per commit
+```
+
+Useful during interactive development: open a terminal pane, run `diffmind watch`, and get instant AI feedback on every commit you make.
+
+### 3. GitHub PR Review
+
+`diffmind pr` fetches the unified diff from the GitHub API and pipes it straight into the streaming review engine.
+
+```bash
+diffmind pr owner/repo#42              # review PR #42
+diffmind pr owner/repo/pull/42         # equivalent
+diffmind pr https://github.com/owner/repo/pull/42   # full URL also works
+diffmind pr owner/repo#42 --focus issues             # only flag bugs/security
+diffmind pr owner/repo#42 --token ghp_xxx            # private repo
+```
+
+Set `GITHUB_TOKEN` in your environment to avoid rate limits and to access private repositories.
 
 ## What's New in v1.2.0
 

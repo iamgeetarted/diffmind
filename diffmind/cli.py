@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .cache import cache_clear, cache_stats
 from .config import get_config
 from .differ import (
     Diff,
@@ -80,6 +81,8 @@ def cmd_review(args: argparse.Namespace) -> int:
             print(msg)
         return 0
 
+    use_cache = not getattr(args, "no_cache", False)
+
     if args.format in ("table", "rich") and con:
         from rich.markdown import Markdown
         from rich.panel import Panel
@@ -111,6 +114,7 @@ def cmd_review(args: argparse.Namespace) -> int:
                     model=args.model,
                     focus=args.focus,
                     on_chunk=on_chunk,
+                    use_cache=use_cache,
                 )
             except (ImportError, EnvironmentError) as exc:
                 con.print(f"[red]{exc}[/red]")
@@ -134,7 +138,8 @@ def cmd_review(args: argparse.Namespace) -> int:
             print(text, end="", flush=True)
 
     try:
-        result = stream_review(diff, model=args.model, focus=args.focus, on_chunk=on_chunk_plain)
+        result = stream_review(diff, model=args.model, focus=args.focus, on_chunk=on_chunk_plain,
+                               use_cache=use_cache)
     except (ImportError, EnvironmentError) as exc:
         print(f"diffmind: {exc}", file=sys.stderr)
         return 1
@@ -389,6 +394,199 @@ def cmd_history(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_cache(args: argparse.Namespace) -> int:
+    """Manage the local review cache."""
+    con = _console()
+    action = args.cache_action
+
+    if action == "clear":
+        n = cache_clear()
+        msg = f"Cache cleared — {n} entr{'ies' if n != 1 else 'y'} removed."
+        if con:
+            con.print(f"[dim]{msg}[/dim]")
+        else:
+            print(msg)
+        return 0
+
+    # stats (default)
+    stats = cache_stats()
+    if con:
+        from rich.table import Table
+        from rich import box as rbox
+        from rich.panel import Panel
+
+        table = Table(box=rbox.SIMPLE, show_header=False, padding=(0, 2))
+        table.add_column("Key", style="bold")
+        table.add_column("Value")
+        table.add_row("Entries", str(stats["count"]))
+        table.add_row("Size", f"{stats['size_bytes'] / 1024:.1f} KB")
+        if stats["newest"]:
+            import time
+            table.add_row("Newest", time.strftime("%Y-%m-%d %H:%M", time.localtime(stats["newest"])))
+            table.add_row("Oldest", time.strftime("%Y-%m-%d %H:%M", time.localtime(stats["oldest"])))
+        table.add_row("Location", stats["path"])
+        con.print(Panel(table, title="[bold cyan]diffmind cache[/bold cyan]",
+                        border_style="cyan", box=rbox.ROUNDED))
+    else:
+        print(f"entries={stats['count']}  size={stats['size_bytes']} bytes  path={stats['path']}")
+    return 0
+
+
+def cmd_watch(args: argparse.Namespace) -> int:
+    """Watch for new commits and auto-review each one as it lands."""
+    con = _console()
+    cwd = Path(args.cwd) if args.cwd else None
+
+    if con:
+        con.print(
+            f"[bold cyan]diffmind watch[/bold cyan]  "
+            f"[dim]polling every {args.interval}s · model={args.model} · focus={args.focus}[/dim]"
+        )
+        con.print("[dim]Press Ctrl-C to stop.[/dim]\n")
+
+    from .formatter import format_rich
+
+    def _on_new(sha: str) -> None:
+        if con:
+            con.rule(f"[cyan]{sha[:8]}[/cyan]")
+
+    def _on_chunk(text: str) -> None:
+        if con:
+            from rich.markdown import Markdown
+            con.print(Markdown(text), end="")
+        else:
+            print(text, end="", flush=True)
+
+    async def _run() -> None:
+        from .watcher import watch
+        from .differ import diff_commit
+        from .reviewer import stream_review
+
+        seen: set[str] = set()
+
+        async def _poll() -> None:
+            nonlocal seen
+            import asyncio as _asyncio
+            proc = await _asyncio.create_subprocess_exec(
+                "git", "log", "-50", "--format=%H",
+                stdout=_asyncio.subprocess.PIPE,
+                stderr=_asyncio.subprocess.PIPE,
+                cwd=cwd,
+            )
+            stdout, _ = await proc.communicate()
+            seen = set(h.strip() for h in stdout.decode().splitlines() if h.strip())
+
+        await _poll()
+
+        while True:
+            await asyncio.sleep(args.interval)
+            import asyncio as _asyncio
+            proc = await _asyncio.create_subprocess_exec(
+                "git", "log", "-20", "--format=%H",
+                stdout=_asyncio.subprocess.PIPE,
+                stderr=_asyncio.subprocess.PIPE,
+                cwd=cwd,
+            )
+            stdout, _ = await proc.communicate()
+            current = [h.strip() for h in stdout.decode().splitlines() if h.strip()]
+            new = [sha for sha in current if sha not in seen]
+            for sha in reversed(new):
+                seen.add(sha)
+                _on_new(sha)
+                try:
+                    diff = await diff_commit(sha, cwd=cwd)
+                    stream_review(diff, model=args.model, focus=args.focus,
+                                  on_chunk=_on_chunk, use_cache=False)
+                    if con:
+                        con.print()
+                except Exception as exc:
+                    if con:
+                        con.print(f"[red]Error reviewing {sha[:8]}: {exc}[/red]")
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        if con:
+            con.print("\n[dim]Watch stopped.[/dim]")
+    return 0
+
+
+def cmd_pr(args: argparse.Namespace) -> int:
+    """Fetch and review a GitHub Pull Request diff."""
+    con = _console()
+
+    from .github_pr import fetch_pr_diff
+
+    try:
+        diff = fetch_pr_diff(args.ref, token=args.token)
+    except (RuntimeError, ValueError) as exc:
+        print(f"diffmind pr: {exc}", file=sys.stderr)
+        return 2
+
+    if diff.is_empty:
+        msg = "PR diff is empty — nothing to review."
+        if con:
+            con.print(f"[dim]{msg}[/dim]")
+        else:
+            print(msg)
+        return 0
+
+    if con:
+        from rich.markdown import Markdown
+        from rich.panel import Panel
+        from rich import box as rbox
+        from rich.live import Live
+
+        files_note = ""
+        if diff.files_changed:
+            n = len(diff.files_changed)
+            files_note = (
+                f"  [dim]{n} file{'s' if n != 1 else ''}: "
+                f"{', '.join(diff.files_changed[:5])}{'…' if n > 5 else ''}[/dim]"
+            )
+
+        con.print()
+        con.print(f"[bold cyan]diffmind pr[/bold cyan]  [dim]{diff.label}[/dim]{files_note}  "
+                  f"[dim]model={args.model}[/dim]")
+        con.print()
+
+        collected: list[str] = []
+
+        with Live(console=con, refresh_per_second=12) as live:
+            def on_chunk(text: str) -> None:
+                collected.append(text)
+                md = Markdown("".join(collected))
+                live.update(Panel(md, border_style="cyan", box=rbox.ROUNDED))
+
+            try:
+                result = stream_review(diff, model=args.model, focus=args.focus,
+                                       on_chunk=on_chunk,
+                                       use_cache=not getattr(args, "no_cache", False))
+            except (ImportError, EnvironmentError) as exc:
+                con.print(f"[red]{exc}[/red]")
+                return 1
+    else:
+        def on_chunk_plain(text: str) -> None:
+            print(text, end="", flush=True)
+
+        try:
+            result = stream_review(diff, model=args.model, focus=args.focus,
+                                   on_chunk=on_chunk_plain,
+                                   use_cache=not getattr(args, "no_cache", False))
+        except (ImportError, EnvironmentError) as exc:
+            print(f"diffmind: {exc}", file=sys.stderr)
+            return 1
+
+    if result.truncated:
+        msg = "⚠ Diff was truncated to fit the context window."
+        if con:
+            con.print(f"[yellow]{msg}[/yellow]")
+        else:
+            print(msg, file=sys.stderr)
+
+    return 0 if result.ok else 1
+
+
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
@@ -474,6 +672,10 @@ config (~/.diffmind.toml):
         "--save", action="store_true",
         help="Append review to ~/.diffmind/history.jsonl",
     )
+    pr.add_argument(
+        "--no-cache", action="store_true",
+        help="Bypass the disk cache and always call the AI",
+    )
     pr.set_defaults(func=cmd_review)
 
     # -- score --
@@ -526,6 +728,44 @@ config (~/.diffmind.toml):
         "--format", "-f", choices=["rich", "markdown", "json"], default="rich",
     )
     pl.set_defaults(func=cmd_log)
+
+    # -- cache --
+    pc = sub.add_parser("cache", help="Manage the local review cache (~/.diffmind/cache/)")
+    pc.add_argument(
+        "cache_action", choices=["stats", "clear"], nargs="?", default="stats",
+        metavar="ACTION", help="'stats' (default) or 'clear'",
+    )
+    pc.set_defaults(func=cmd_cache)
+
+    # -- watch --
+    pw = sub.add_parser("watch", help="Watch for new commits and auto-review each one")
+    pw.add_argument(
+        "--interval", type=float, default=5.0, metavar="SECONDS",
+        help="Polling interval in seconds (default: 5)",
+    )
+    pw.add_argument("--model", default=cfg.default_model, metavar="MODEL")
+    pw.add_argument(
+        "--focus", choices=["full", "summary", "issues", "suggest"], default="summary",
+    )
+    pw.set_defaults(func=cmd_watch)
+
+    # -- pr --
+    ppr = sub.add_parser("pr", help="Fetch and review a GitHub Pull Request diff")
+    ppr.add_argument(
+        "ref", metavar="PR",
+        help="PR reference: 'owner/repo#N', 'owner/repo/pull/N', or full GitHub URL",
+    )
+    ppr.add_argument("--model", default=cfg.default_model, metavar="MODEL")
+    ppr.add_argument(
+        "--focus", choices=["full", "summary", "issues", "suggest"],
+        default=cfg.default_focus,
+    )
+    ppr.add_argument(
+        "--token", metavar="TOKEN", default=None,
+        help="GitHub token (default: $GITHUB_TOKEN). Needed for private repos.",
+    )
+    ppr.add_argument("--no-cache", action="store_true", help="Bypass the disk cache")
+    ppr.set_defaults(func=cmd_pr)
 
     return p
 

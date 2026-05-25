@@ -89,17 +89,36 @@ def stream_review(
     focus: str = "full",
     api_key: str | None = None,
     on_chunk: Callable[[str], None] | None = None,
+    use_cache: bool = True,
+    cache_ttl: int = 7 * 24 * 3600,
 ) -> ReviewResult:
     """Stream a review for *diff*, calling *on_chunk* for each text chunk.
 
+    Caches results to ~/.diffmind/cache/ by diff content hash (use_cache=True by default).
     Returns the completed ReviewResult when streaming ends.
     """
     if diff.is_empty:
         return ReviewResult(diff=diff, text="(empty diff — nothing to review)", model=model)
 
+    truncated = len(diff.content) > _MAX_DIFF_CHARS
+
+    if use_cache:
+        from .cache import get_cached, put_cached
+        cached = get_cached(diff.content, model, focus, ttl=cache_ttl)
+        if cached:
+            text = cached["review"]
+            if on_chunk:
+                on_chunk(text)
+            return ReviewResult(
+                diff=diff,
+                text=text,
+                model=model,
+                truncated=cached.get("truncated", truncated),
+                error="",
+            )
+
     client = _get_client(api_key)
     prompt = _build_prompt(diff, focus)
-    truncated = len(diff.content) > _MAX_DIFF_CHARS
 
     chunks: list[str] = []
     with client.messages.stream(
@@ -112,9 +131,14 @@ def stream_review(
             if on_chunk:
                 on_chunk(chunk)
 
+    text = "".join(chunks)
+    if use_cache:
+        from .cache import put_cached
+        put_cached(diff.content, model, focus, text, truncated)
+
     return ReviewResult(
         diff=diff,
-        text="".join(chunks),
+        text=text,
         model=model,
         truncated=truncated,
     )
